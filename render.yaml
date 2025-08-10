@@ -1,0 +1,6 @@
+services:
+  - type: web
+    name: zap-browser-automation
+    env: docker
+    plan: free
+    autoDeploy: true
