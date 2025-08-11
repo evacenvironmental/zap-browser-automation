@@ -1,11 +1,13 @@
+// file: package.json
 {
   "name": "zap-browser-automation",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "NODE_ENV=development node server.js"
+    "dev": "NODE_ENV=development node server.js",
+    "postinstall": "npx puppeteer browsers install chromium"
   },
   "dependencies": {
     "express": "^4.19.2",
