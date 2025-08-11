@@ -1,23 +1,14 @@
 // file: server.js
 /**
  * Endpoints:
- *   GET  /health -> { ok: true }
- *   GET  /info?url=... -> quick probe: { ok, finalUrl, httpStatus, title }
- *   POST /run {
- *     url: string (required)
- *     buttonId?: string          // click by id
- *     selector?: string          // or full CSS selector
- *     frameUrlContains?: string  // if element is inside iframe whose src includes this
- *     waitMs?: number            // wait after click (default 60000)
- *     waitForSelectorMs?: number // timeout to find element (default 20000)
- *     extraWaitAfterLoadMs?: number // extra wait after navigation (default 0)
- *     useJsClick?: boolean       // fallback to el.click() in page context
- *   }
- * Response: { success, details? , error?, hint? }
+ *   GET  /health
+ *   GET  /info?url=...
+ *   POST /run { url, buttonId?, selector?, frameUrlContains?, waitMs?, waitForSelectorMs?, extraWaitAfterLoadMs?, useJsClick? }
  */
 import express from "express";
 import puppeteer from "puppeteer";
 import pRetry from "p-retry";
+import fs from "fs";
 
 const app = express();
 app.use(express.json({ limit: "256kb" }));
@@ -28,14 +19,32 @@ const NAV_TIMEOUT_MS = Number(process.env.NAV_TIMEOUT_MS || 45000);
 const CLICK_TIMEOUT_MS_DEFAULT = Number(process.env.CLICK_TIMEOUT_MS || 20000);
 const DEFAULT_WAIT_MS = Number(process.env.DEFAULT_WAIT_MS || 60000);
 
-// Why: Node lacks CSS.escape
+// Escape CSS id
 const escapeCssId = (id) =>
   String(id).replace(/([ !"#$%&'()*+,./:;<=>?@[\\\]^`{|}~])/g, "\\$1");
 
-// Why: Puppeteer Docker image ships Chromium at this path; avoids Chrome lookup failure
-const resolveExecutable = () =>
-  process.env.PUPPETEER_EXECUTABLE_PATH || "/usr/bin/chromium";
+// Robust browser path resolver
+const resolveExecutable = () => {
+  const candidates = [
+    process.env.PUPPETEER_EXECUTABLE_PATH,
+    "/usr/bin/chromium-browser",
+    "/usr/bin/chromium",
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable"
+  ].filter(Boolean);
 
+  for (const p of candidates) {
+    try {
+      if (fs.existsSync(p)) return p;
+    } catch {}
+  }
+  throw new Error(
+    `No browser executable found. Checked: ${candidates.join(", ")}. ` +
+    `Set PUPPETEER_EXECUTABLE_PATH env to the correct path in Render.`
+  );
+};
+
+// --- Routes ---
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
 app.get("/info", async (req, res) => {
@@ -68,7 +77,7 @@ app.get("/info", async (req, res) => {
       title
     });
   } catch (err) {
-    console.error("Error in /info:", err); // Why: surface exact failure to Render logs
+    console.error("Error in /info:", err);
     return res.status(500).json({ ok: false, error: String(err?.message || err) });
   } finally {
     if (browser) { try { await browser.close(); } catch {} }
@@ -126,7 +135,7 @@ app.post("/run", async (req, res) => {
       await page.waitForTimeout(Number(extraWaitAfterLoadMs));
     }
 
-    // Choose context (page or iframe)
+    // Choose context
     let ctx = page;
     if (frameUrlContains) {
       const frames = page.frames();
@@ -137,14 +146,13 @@ app.post("/run", async (req, res) => {
         return res.status(408).json({
           success: false,
           error: `Iframe not found for frameUrlContains="${frameUrlContains}"`,
-          hint: "Inspect iframe src and pass a unique substring.",
           details: { afterNavUrl, navStatus, frameUrls }
         });
       }
       ctx = match;
     }
 
-    // Build final selector
+    // Build selector
     const css = selector ? String(selector) : `#${escapeCssId(buttonId)}`;
     const selectorTimeout = Number.isFinite(Number(waitForSelectorMs))
       ? Number(waitForSelectorMs)
@@ -160,10 +168,6 @@ app.post("/run", async (req, res) => {
       return res.status(408).json({
         success: false,
         error: `Timeout waiting for selector "${css}"`,
-        hint:
-          frameUrlContains
-            ? "Check frameUrlContains or increase waitForSelectorMs."
-            : "If element is in an iframe, pass frameUrlContains; for SPA, increase waits.",
         details: { afterNavUrl, finalUrl, navStatus, pageTitle }
       });
     }
@@ -206,11 +210,10 @@ app.post("/run", async (req, res) => {
       }
     });
   } catch (err) {
-    console.error("Error in /run:", err); // Why: aid debugging from Render logs
+    console.error("Error in /run:", err);
     return res.status(500).json({
       success: false,
-      error: String(err?.message || err),
-      hint: "See Render logs; consider frameUrlContains/useJsClick or longer waits."
+      error: String(err?.message || err)
     });
   } finally {
     if (browser) { try { await browser.close(); } catch {} }
