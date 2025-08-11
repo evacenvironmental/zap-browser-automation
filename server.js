@@ -13,19 +13,19 @@ import fs from "fs";
 const app = express();
 app.use(express.json({ limit: "256kb" }));
 
+// Tunables
 const HEADLESS = process.env.HEADLESS !== "false";
 const NAV_TIMEOUT_MS = Number(process.env.NAV_TIMEOUT_MS || 45000);
 const CLICK_TIMEOUT_MS_DEFAULT = Number(process.env.CLICK_TIMEOUT_MS || 20000);
 const DEFAULT_WAIT_MS = Number(process.env.DEFAULT_WAIT_MS || 60000);
 
-// Escape CSS id (no CSS.escape in Node)
+// Escape CSS id (Node lacks CSS.escape)
 const escapeCssId = (id) =>
   String(id).replace(/([ !"#$%&'()*+,./:;<=>?@[\\\]^`{|}~])/g, "\\$1");
 
-// Resolve a working Chromium/Chrome path: env → Puppeteer’s downloaded → system paths
+// Resolve a working browser path: env → Puppeteer's downloaded → system paths
 const resolveExecutable = () => {
   const tried = [];
-
   const tryPath = (p) => {
     if (!p) return null;
     tried.push(p);
@@ -33,11 +33,11 @@ const resolveExecutable = () => {
     return null;
   };
 
-  // 1) Env override
+  // 1) Env (set by Puppeteer Docker image)
   const envPath = tryPath(process.env.PUPPETEER_EXECUTABLE_PATH);
   if (envPath) return envPath;
 
-  // 2) Puppeteer's downloaded browser (postinstall)
+  // 2) Puppeteer’s own downloaded browser (if present)
   try {
     const p = puppeteer.executablePath();
     const pp = tryPath(p);
