@@ -1,8 +1,9 @@
 # file: Dockerfile
 FROM ghcr.io/puppeteer/puppeteer:22.12.1
 
-# This image already has Chromium and sets PUPPETEER_EXECUTABLE_PATH
+# This image already installs Chromium and sets PUPPETEER_EXECUTABLE_PATH
 WORKDIR /app
+
 COPY package.json package-lock.json* ./
 RUN npm ci --omit=dev
 
