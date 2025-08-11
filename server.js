@@ -112,7 +112,7 @@ app.post("/run", async (req, res) => {
     const afterNavUrl = page.url();
 
     if (Number(extraWaitAfterLoadMs) > 0) {
-      await page.waitForTimeout(Number(extraWaitAfterLoadMs));
+      await new Promise(resolve => setTimeout(resolve, waitMs));
     }
 
     // If element is inside an iframe, allow selecting frame by URL substring
@@ -183,3 +183,4 @@ app.post("/run", async (req, res) => {
 
 const port = Number(process.env.PORT || 3000);
 app.listen(port, () => console.log(`Service listening on :${port}`));
+
