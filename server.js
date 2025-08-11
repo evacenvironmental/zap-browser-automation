@@ -65,6 +65,8 @@ app.post("/run", async (req, res) => {
     });
   } catch (err) {
     return res.status(500).json({ success: false, error: String(err?.message || err) });
+    console.error("Error in /run:", err); // 👈 This will appear in Render logs
+   return res.status(500).json({ success: false, error: String(err?.message || err) });
   } finally {
     if (browser) {
       try { await browser.close(); } catch {}
@@ -74,3 +76,4 @@ app.post("/run", async (req, res) => {
 
 const port = Number(process.env.PORT || 3000);
 app.listen(port, () => console.log(`Service listening on :${port}`));
+
