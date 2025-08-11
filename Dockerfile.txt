@@ -1,9 +1,7 @@
 # file: Dockerfile
 FROM ghcr.io/puppeteer/puppeteer:22.12.1
 
-# This image already installs Chromium and sets PUPPETEER_EXECUTABLE_PATH
 WORKDIR /app
-
 COPY package.json package-lock.json* ./
 RUN npm ci --omit=dev
 
@@ -12,5 +10,4 @@ COPY server.js ./
 ENV NODE_ENV=production
 ENV PORT=3000
 EXPOSE 3000
-
 CMD ["node", "server.js"]
