@@ -2,20 +2,18 @@
 /**
  * Endpoints:
  *   GET  /health -> { ok: true }
- *   GET  /info?url=... -> quick fetch to see title/finalUrl/status
- *   POST /run
- *     Body:
- *       url: string (required)
- *       buttonId?: string            // click by id
- *       selector?: string            // or click by CSS selector (alternative to buttonId)
- *       frameUrlContains?: string    // if button lives inside an iframe whose src includes this
- *       waitMs?: number              // wait after click (default 60000)
- *       waitForSelectorMs?: number   // timeout waiting for button (default 20000)
- *       extraWaitAfterLoadMs?: number// extra wait after navigation (default 0)
- *       useJsClick?: boolean         // fallback to el.click() (true helps when overlays block clicks)
- *
- * Response:
- *   { success, details? , error?, hint? }
+ *   GET  /info?url=... -> quick probe: { ok, finalUrl, httpStatus, title }
+ *   POST /run {
+ *     url: string (required)
+ *     buttonId?: string          // click by id
+ *     selector?: string          // or full CSS selector
+ *     frameUrlContains?: string  // if element is inside iframe whose src includes this
+ *     waitMs?: number            // wait after click (default 60000)
+ *     waitForSelectorMs?: number // timeout to find element (default 20000)
+ *     extraWaitAfterLoadMs?: number // extra wait after navigation (default 0)
+ *     useJsClick?: boolean       // fallback to el.click() in page context
+ *   }
+ * Response: { success, details? , error?, hint? }
  */
 import express from "express";
 import puppeteer from "puppeteer";
@@ -30,18 +28,25 @@ const NAV_TIMEOUT_MS = Number(process.env.NAV_TIMEOUT_MS || 45000);
 const CLICK_TIMEOUT_MS_DEFAULT = Number(process.env.CLICK_TIMEOUT_MS || 20000);
 const DEFAULT_WAIT_MS = Number(process.env.DEFAULT_WAIT_MS || 60000);
 
+// Why: Node lacks CSS.escape
 const escapeCssId = (id) =>
   String(id).replace(/([ !"#$%&'()*+,./:;<=>?@[\\\]^`{|}~])/g, "\\$1");
+
+// Why: Puppeteer Docker image ships Chromium at this path; avoids Chrome lookup failure
+const resolveExecutable = () =>
+  process.env.PUPPETEER_EXECUTABLE_PATH || "/usr/bin/chromium";
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
 app.get("/info", async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).json({ ok: false, error: "Missing url" });
+
   let browser;
   try {
     browser = await puppeteer.launch({
       headless: HEADLESS,
+      executablePath: resolveExecutable(),
       args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
     });
     const page = await browser.newPage();
@@ -49,8 +54,13 @@ app.get("/info", async (req, res) => {
     await page.setUserAgent(
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123 Safari/537.36"
     );
-    const resp = await page.goto(url, { waitUntil: ["domcontentloaded", "networkidle2"], timeout: NAV_TIMEOUT_MS });
+
+    const resp = await page.goto(url, {
+      waitUntil: ["domcontentloaded", "networkidle2"],
+      timeout: NAV_TIMEOUT_MS
+    });
     const title = await page.title().catch(() => null);
+
     return res.json({
       ok: true,
       finalUrl: page.url(),
@@ -58,7 +68,7 @@ app.get("/info", async (req, res) => {
       title
     });
   } catch (err) {
-    console.error("Error in /info:", err);
+    console.error("Error in /info:", err); // Why: surface exact failure to Render logs
     return res.status(500).json({ ok: false, error: String(err?.message || err) });
   } finally {
     if (browser) { try { await browser.close(); } catch {} }
@@ -88,6 +98,7 @@ app.post("/run", async (req, res) => {
   try {
     browser = await puppeteer.launch({
       headless: HEADLESS,
+      executablePath: resolveExecutable(),
       args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
     });
     const page = await browser.newPage();
@@ -107,6 +118,7 @@ app.post("/run", async (req, res) => {
       },
       { retries: 2 }
     );
+
     const navStatus = navResp?.status?.() ?? null;
     const afterNavUrl = page.url();
 
@@ -118,14 +130,14 @@ app.post("/run", async (req, res) => {
     let ctx = page;
     if (frameUrlContains) {
       const frames = page.frames();
-      const match = frames.find(f => (f.url() || "").includes(frameUrlContains));
+      const match = frames.find((f) => (f.url() || "").includes(frameUrlContains));
       if (!match) {
-        const frameUrls = frames.map(f => f.url()).filter(Boolean);
+        const frameUrls = frames.map((f) => f.url()).filter(Boolean);
         console.error("Iframe not found", { frameUrlContains, frameUrls });
         return res.status(408).json({
           success: false,
           error: `Iframe not found for frameUrlContains="${frameUrlContains}"`,
-          hint: "Open DevTools, check iframe src, pass a unique substring from its URL.",
+          hint: "Inspect iframe src and pass a unique substring.",
           details: { afterNavUrl, navStatus, frameUrls }
         });
       }
@@ -134,7 +146,9 @@ app.post("/run", async (req, res) => {
 
     // Build final selector
     const css = selector ? String(selector) : `#${escapeCssId(buttonId)}`;
-    const selectorTimeout = Number.isFinite(Number(waitForSelectorMs)) ? Number(waitForSelectorMs) : CLICK_TIMEOUT_MS_DEFAULT;
+    const selectorTimeout = Number.isFinite(Number(waitForSelectorMs))
+      ? Number(waitForSelectorMs)
+      : CLICK_TIMEOUT_MS_DEFAULT;
 
     // Wait for element
     try {
@@ -146,20 +160,20 @@ app.post("/run", async (req, res) => {
       return res.status(408).json({
         success: false,
         error: `Timeout waiting for selector "${css}"`,
-        hint: frameUrlContains
-          ? "Double-check frameUrlContains or increase waitForSelectorMs."
-          : "If element is in an iframe, pass frameUrlContains; if SPA, increase waitForSelectorMs or extraWaitAfterLoadMs.",
+        hint:
+          frameUrlContains
+            ? "Check frameUrlContains or increase waitForSelectorMs."
+            : "If element is in an iframe, pass frameUrlContains; for SPA, increase waits.",
         details: { afterNavUrl, finalUrl, navStatus, pageTitle }
       });
     }
 
-    // Scroll into view
+    // Scroll + click
     await ctx.evaluate((sel) => {
       const el = document.querySelector(sel);
       el?.scrollIntoView({ block: "center", inline: "center" });
     }, css);
 
-    // Click
     if (useJsClick) {
       const clicked = await ctx.evaluate((sel) => {
         const el = document.querySelector(sel);
@@ -192,11 +206,11 @@ app.post("/run", async (req, res) => {
       }
     });
   } catch (err) {
-    console.error("Error in /run:", err);
+    console.error("Error in /run:", err); // Why: aid debugging from Render logs
     return res.status(500).json({
       success: false,
       error: String(err?.message || err),
-      hint: "See Render logs for stack; if page is SPA/iframe/anti-bot, pass frameUrlContains/useJsClick or share details."
+      hint: "See Render logs; consider frameUrlContains/useJsClick or longer waits."
     });
   } finally {
     if (browser) { try { await browser.close(); } catch {} }
