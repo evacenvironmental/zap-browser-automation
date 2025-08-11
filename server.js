@@ -12,21 +12,21 @@ import pRetry from "p-retry";
 const app = express();
 app.use(express.json({ limit: "256kb" }));
 
-// Tunables
+// Config
 const HEADLESS = process.env.HEADLESS !== "false";
 const NAV_TIMEOUT_MS = Number(process.env.NAV_TIMEOUT_MS || 45000);
 const CLICK_TIMEOUT_MS_DEFAULT = Number(process.env.CLICK_TIMEOUT_MS || 20000);
 const DEFAULT_WAIT_MS = Number(process.env.DEFAULT_WAIT_MS || 60000);
 
-// Why: Node lacks CSS.escape
-const escapeCssId = (id) =>
-  String(id).replace(/([ !"#$%&'()*+,./:;<=>?@[\\\]^`{|}~])/g, "\\$1");
+// Minimal utilities
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms)); // Why: older Puppeteer lacks waitForTimeout
+const escapeCssId = (id) => String(id).replace(/([ !"#$%&'()*+,./:;<=>?@[\\\]^`{|}~])/g, "\\$1");
 
-// Read path provided by Puppeteer Docker image (or your env)
+// Chromium path from Puppeteer Docker image; if empty, Dockerfile likely not used
 const EXEC_PATH = process.env.PUPPETEER_EXECUTABLE_PATH || "";
 console.log("PUPPETEER_EXECUTABLE_PATH =", EXEC_PATH || "(empty)");
-// Why: If this is empty at runtime, Render isn’t using your Dockerfile with Puppeteer image.
 
+// ---------- Routes ----------
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
 app.get("/info", async (req, res) => {
@@ -37,7 +37,7 @@ app.get("/info", async (req, res) => {
   try {
     browser = await puppeteer.launch({
       headless: HEADLESS,
-      executablePath: EXEC_PATH, // use env-provided Chromium
+      executablePath: EXEC_PATH,
       args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
     });
 
@@ -90,7 +90,7 @@ app.post("/run", async (req, res) => {
 
     browser = await puppeteer.launch({
       headless: HEADLESS,
-      executablePath: EXEC_PATH, // use env-provided Chromium
+      executablePath: EXEC_PATH,
       args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
     });
 
@@ -112,16 +112,16 @@ app.post("/run", async (req, res) => {
     const afterNavUrl = page.url();
 
     if (Number(extraWaitAfterLoadMs) > 0) {
-      await new Promise(resolve => setTimeout(resolve, waitMs));
+      await sleep(Number(extraWaitAfterLoadMs));
     }
 
-    // If element is inside an iframe, allow selecting frame by URL substring
+    // Select context (iframe support)
     let ctx = page;
     if (frameUrlContains) {
       const frames = page.frames();
-      const match = frames.find(f => (f.url() || "").includes(frameUrlContains));
+      const match = frames.find((f) => (f.url() || "").includes(frameUrlContains));
       if (!match) {
-        const frameUrls = frames.map(f => f.url()).filter(Boolean);
+        const frameUrls = frames.map((f) => f.url()).filter(Boolean);
         console.error("Iframe not found", { frameUrlContains, frameUrls });
         return res.status(408).json({
           success: false,
@@ -133,9 +133,12 @@ app.post("/run", async (req, res) => {
     }
 
     const css = selector ? String(selector) : `#${escapeCssId(buttonId)}`;
-    const selectorTimeout = Number.isFinite(Number(waitForSelectorMs)) ? Number(waitForSelectorMs) : CLICK_TIMEOUT_MS_DEFAULT;
+    const selectorTimeout = Number.isFinite(Number(waitForSelectorMs))
+      ? Number(waitForSelectorMs)
+      : CLICK_TIMEOUT_MS_DEFAULT;
 
     try {
+      // When clicking inside an iframe context, ensure visibility within that context
       await ctx.waitForSelector(css, { timeout: selectorTimeout, visible: true });
     } catch (e) {
       const pageTitle = await page.title().catch(() => null);
@@ -148,17 +151,28 @@ app.post("/run", async (req, res) => {
       });
     }
 
-    await ctx.evaluate((sel) => { document.querySelector(sel)?.scrollIntoView({ block: "center", inline: "center" }); }, css);
+    // Scroll + click (JS-click fallback avoids overlay issues)
+    await ctx.evaluate((sel) => {
+      const el = document.querySelector(sel);
+      el?.scrollIntoView({ block: "center", inline: "center" });
+    }, css);
 
     if (useJsClick) {
-      const clicked = await ctx.evaluate((sel) => { const el = document.querySelector(sel); if (!el) return false; el.click(); return true; }, css);
-      if (!clicked) return res.status(500).json({ success: false, error: `Failed to JS-click ${css}` });
+      const clicked = await ctx.evaluate((sel) => {
+        const el = document.querySelector(sel);
+        if (!el) return false;
+        el.click();
+        return true;
+      }, css);
+      if (!clicked) {
+        return res.status(500).json({ success: false, error: `Failed to JS-click ${css}` });
+      }
     } else {
       await ctx.click(css, { delay: 25 });
     }
 
     const sleepMs = Number.isFinite(Number(waitMs)) ? Number(waitMs) : DEFAULT_WAIT_MS;
-    await ctx.waitForTimeout(sleepMs);
+    await sleep(sleepMs);
 
     const elapsedMs = Date.now() - startedAt;
     return res.json({
@@ -183,4 +197,3 @@ app.post("/run", async (req, res) => {
 
 const port = Number(process.env.PORT || 3000);
 app.listen(port, () => console.log(`Service listening on :${port}`));
-
